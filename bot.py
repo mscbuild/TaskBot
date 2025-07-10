@@ -1,6 +1,7 @@
 import asyncio
 from typing import Optional, List
 from datetime import datetime
+import platform
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -47,7 +48,7 @@ class TaskRepository:
         self.session.add(db_task)
         await self.session.commit()
         await self.session.refresh(db_task)
-        return TaskResponse(id=db_task.id, description=db_task.description, created_at=db_task(created_at)
+        return TaskResponse(id=db_task.id, description=db_task.description, created_at=db_task.created_at)
 
     async def read(self, user_id: int, task_id: int) -> Optional[TaskResponse]:
         result = await self.session.execute(
@@ -211,7 +212,7 @@ async def main():
     
     repository = TaskRepository(session)
     analyzer = TaskAnalyzer()
-    bot = TaskBot("YOUR_BOT_TOKEN", repository, analyzer)
+    bot = TaskBot("Your_bot_token", repository, analyzer)
     await bot.start()
 
 if platform.system() == "Emscripten":
