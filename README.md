@@ -1,8 +1,8 @@
 # TaskBot: A Telegram Task Management Bot
  ![](https://komarev.com/ghpvc/?username=mscbuild) 
- ![](https://img.shields.io/github/license/mscbuild/TaskBo) 
+ ![](https://img.shields.io/github/license/mscbuild/TaskBot) 
  ![](https://img.shields.io/badge/PRs-Welcome-green)
- ![](https://img.shields.io/github/languages/code-size/mscbuild/TaskBo)
+ ![](https://img.shields.io/github/languages/code-size/mscbuild/TaskBot)
 ![](https://img.shields.io/badge/code%20style-python-green)
 ![](https://img.shields.io/github/stars/mscbuild)
 ![](https://img.shields.io/badge/Topic-Github-lighred)
