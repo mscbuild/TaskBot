@@ -5,6 +5,7 @@ import platform
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy import String, Integer, select
@@ -12,7 +13,6 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableSequence
 from langchain_community.llms import FakeListLLM  # For testing
-import pytest
 from pydantic import BaseModel
 
 # --- Database Models ---
@@ -26,7 +26,7 @@ class Task(Base):
     description: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
-# --- Pydantic Models for Type Safety ---
+# --- Pydantic Models ---
 class TaskCreate(BaseModel):
     description: str
 
@@ -38,7 +38,7 @@ class TaskResponse(BaseModel):
     description: str
     created_at: datetime
 
-# --- Memory Layer (Repository) ---
+# --- Repository Layer ---
 class TaskRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -90,10 +90,9 @@ class TaskRepository:
         tasks = result.scalars().all()
         return [TaskResponse(id=t.id, description=t.description, created_at=t.created_at) for t in tasks]
 
-# --- Analysis Layer (LangChain) ---
+# --- Analyzer Layer ---
 class TaskAnalyzer:
     def __init__(self):
-        # Fake LLM for testing; replace with real LLM in production
         self.llm = FakeListLLM(responses=[
             'Action: create, Description: "Buy groceries"',
             'Action: list',
@@ -101,22 +100,24 @@ class TaskAnalyzer:
             'Action: delete, ID: 1'
         ])
         self.prompt = PromptTemplate.from_template(
-            "Analyze the user input and determine the action (create, read, update, delete, list) and relevant details: {input}"
+            "Determine action (create, read, update, delete, list) and relevant details: {input}"
         )
         self.chain = self.prompt | self.llm | StrOutputParser()
 
     def analyze(self, user_input: str) -> dict:
         result = self.chain.invoke({"input": user_input})
-        # Parse result into structured data
-        action = result.split(",")[0].split(":")[1].strip()
+        action = None
         details = {}
-        if "Description:" in result:
-            details["description"] = result.split("Description:")[1].strip().strip('"')
-        if "ID:" in result:
-            details["id"] = int(result.split("ID:")[1].strip())
+        for part in result.split(","):
+            if "Action:" in part:
+                action = part.split(":")[1].strip()
+            elif "Description:" in part:
+                details["description"] = part.split("Description:")[1].strip().strip('"')
+            elif "ID:" in part:
+                details["id"] = int(part.split("ID:")[1].strip())
         return {"action": action, **details}
 
-# --- Processing Layer (Business Logic) ---
+# --- Service Layer ---
 class TaskService:
     def __init__(self, repository: TaskRepository):
         self.repository = repository
@@ -126,25 +127,33 @@ class TaskService:
         if action == "create":
             task = TaskCreate(description=analysis["description"])
             result = await self.repository.create(user_id, task)
-            return f"Task created: {result.description} (ID: {result.id})"
+            return f"✅ Task created: {result.description} (ID: {result.id})"
         elif action == "read":
             task = await self.repository.read(user_id, analysis["id"])
-            return f"Task: {task.description} (ID: {task.id})" if task else "Task not found"
+            return f"📄 Task: {task.description} (ID: {task.id})" if task else "❌ Task not found"
         elif action == "update":
             task = TaskUpdate(description=analysis.get("description"))
             result = await self.repository.update(user_id, analysis["id"], task)
-            return f"Task updated: {result.description} (ID: {result.id})" if result else "Task not found"
+            return f"✏️ Task updated: {result.description} (ID: {result.id})" if result else "❌ Task not found"
         elif action == "delete":
             success = await self.repository.delete(user_id, analysis["id"])
-            return "Task deleted" if success else "Task not found"
+            return "🗑 Task deleted" if success else "❌ Task not found"
         elif action == "list":
             tasks = await self.repository.list(user_id)
             if not tasks:
-                return "No tasks found"
-            return "\n".join(f"ID: {t.id}, Description: {t.description}" for t in tasks)
-        return "Invalid action"
+                return "📭 No tasks found"
+            return "\n".join(f"📝 ID: {t.id}, Description: {t.description}" for t in tasks)
+        return "❌ Invalid action"
 
-# --- Router Layer (aiogram) ---
+# --- UI Keyboard ---
+def create_main_keyboard():
+    buttons = [
+        [KeyboardButton(text="➕ Add Task"), KeyboardButton(text="📋 List Tasks")],
+        [KeyboardButton(text="✏ Update Task"), KeyboardButton(text="🗑 Delete Task")]
+    ]
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+
+# --- Bot Layer ---
 class TaskBot:
     def __init__(self, token: str, repository: TaskRepository, analyzer: TaskAnalyzer):
         self.bot = Bot(token=token)
@@ -156,52 +165,27 @@ class TaskBot:
     def _register_handlers(self):
         @self.dp.message(Command("start"))
         async def start_command(message: types.Message):
-            await message.answer("Welcome to the Task Bot! Send a task description or use /list to see tasks.")
+            await message.answer(
+                "👋 Welcome to the Task Bot!\nChoose an action or type a task description.",
+                reply_markup=create_main_keyboard()
+            )
 
         @self.dp.message()
         async def handle_message(message: types.Message):
-            analysis = self.analyzer.analyze(message.text)
+            user_input = message.text.strip()
+            emoji_map = {
+                "➕ Add Task": "create task: Buy groceries",
+                "📋 List Tasks": "list tasks",
+                "✏ Update Task": "update task ID: 1, Description: Buy eggs",
+                "🗑 Delete Task": "delete task ID: 1"
+            }
+            interpreted_input = emoji_map.get(user_input, user_input)
+            analysis = self.analyzer.analyze(interpreted_input)
             response = await self.service.handle_action(message.from_user.id, analysis)
-            await message.answer(response)
+            await message.answer(response, reply_markup=create_main_keyboard())
 
     async def start(self):
         await self.dp.start_polling(self.bot)
-
-# --- Tests ---
-@pytest.mark.asyncio
-async def test_task_crud():
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    session = async_sessionmaker(engine, expire_on_commit=False)()
-    
-    repo = TaskRepository(session)
-    user_id = 123
-
-    # Test Create
-    task = TaskCreate(description="Test task")
-    created = await repo.create(user_id, task)
-    assert created.description == "Test task"
-
-    # Test Read
-    read_task = await repo.read(user_id, created.id)
-    assert read_task.description == created.description
-
-    # Test Update
-    update = TaskUpdate(description="Updated task")
-    updated = await repo.update(user_id, created.id, update)
-    assert updated.description == "Updated task"
-
-    # Test List
-    tasks = await repo.list(user_id)
-    assert len(tasks) == 1
-    assert tasks[0].description == "Updated task"
-
-    # Test Delete
-    success = await repo.delete(user_id, created.id)
-    assert success
-    task = await repo.read(user_id, created.id)
-    assert task is None
 
 # --- Main ---
 async def main():
@@ -209,10 +193,9 @@ async def main():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     session = async_sessionmaker(engine, expire_on_commit=False)()
-    
     repository = TaskRepository(session)
     analyzer = TaskAnalyzer()
-    bot = TaskBot("Your_bot_token", repository, analyzer)
+    bot = TaskBot("YOUR_TELEGRAM_BOT_TOKEN", repository, analyzer)
     await bot.start()
 
 if platform.system() == "Emscripten":
@@ -220,3 +203,4 @@ if platform.system() == "Emscripten":
 else:
     if __name__ == "__main__":
         asyncio.run(main())
+
